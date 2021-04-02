@@ -6,8 +6,8 @@
 from scipy.stats import truncnorm, uniform
 from csv import writer
 from math import pi
-from numpy import sin, cos, full, array, cross, dot, sqrt
-from numpy.random import randint
+from numpy import sin, cos, full, array, cross, dot, sqrt, ndarray, empty, seterr
+from numpy.random import default_rng
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 
@@ -37,50 +37,58 @@ def cylinder_points(offset=(0, 0, 0), num_points=2000, radius=10, height=20):
                z + full(num_points, offset[2]))
 
 
-# proba samodzielnej implementacji ransaca
+# Own implementation of RANSAC algorithm
 # https://www.youtube.com/watch?v=9D5rrtCC_E0
 # https://en.wikipedia.org/wiki/Random_sample_consensus
-def ransacForPlane(data, max_iter=100):
+def my_ransac(data, max_iter=100):
     # returns vector of a plane passing through 3 given points
-    def planeVector(points):
-        p = array(points[0]) - array(points[1])
-        q = array(points[0]) - array(points[2])
-        v = cross(p, q)
-        D = dot(array(points[0]), v)
-        ret = v.tolist()
-        ret.append(D)
-        return ret
+    def get_plane_vector(points):
+        p = points[1] - points[0]
+        q = points[2] - points[0]
+        # math
+        ABC = cross(p, q)
+        D = -dot(points[0], ABC)
+        return array([*ABC, D])
 
-    def distanceFromPlane(plane_vector, point):
-        return abs(dot(array(plane_vector[0:3]), array(point))) / sqrt(
-            plane_vector[0] ** 2 + plane_vector[1] ** 2 + plane_vector[2] ** 2)
+    # returns the shortest distance from a point to a plane
+    def get_distance_from_plane(plane_vector, point):
+        ABC = plane_vector[0:3]
+        D = plane_vector[3]
+        # and more math
+        distance = abs(dot(ABC, point) + D) / sqrt(dot(ABC, ABC))
+        return distance
 
-    bestPlane = None
-    bestScore = 0
+    best_plane = None
+    best_score = 0
+
+    # changing to numpy type if needed
+    if type(data) is not ndarray:
+        data = array(data)
 
     for iter in range(0, max_iter):
-        drawnIndices = randint(len(data), size=3)
-        maybeInliers = [data[i] for i in drawnIndices.tolist()]
-        selectedPlane = planeVector(maybeInliers)
-        alsoInliers = []  # empty set
-        for point in data:
-            if distanceFromPlane(selectedPlane, point) < 5:
-                alsoInliers.append(point)
+        # selecting 3 different random points to create a plane
+        selected_plane = get_plane_vector([data[i] for i in default_rng().choice(len(data), size=3, replace=False)])
+        # counting number of points being close to the surface
+        model_score = sum([True for point in data if get_distance_from_plane(selected_plane, point) < 3])
+        # checking how it did
+        if model_score > best_score:
+            best_score = model_score
+            best_plane = selected_plane
 
-        modelScore = len(alsoInliers)
-        if modelScore > bestScore:
-            bestScore = modelScore
-            bestPlane = selectedPlane
+    # back to list
+    if best_plane is not None:
+        best_plane = best_plane.tolist()
 
-    return bestPlane
+    return best_plane
 
 
 def main():
     # generating cloud points
-    cloud_points = []
-    cloud_points.extend(surface_point(offset=(10, 20, 10), orientation="vert", num_points=5000))
-    cloud_points.extend(surface_point(offset=(-10, -20, -10), orientation="hor", num_points=5000))
-    cloud_points.extend(cylinder_points(num_points=5000))
+    cloud_points = [
+        *surface_point(offset=(10, 20, 10), orientation="vert", num_points=5000),
+        *surface_point(offset=(-10, -20, -10), orientation="hor", num_points=5000),
+        *cylinder_points(num_points=5000)
+    ]
     with open('cloud.xyz', 'w', encoding='utf-8', newline='\n') as csvfile:
         csvwriter = writer(csvfile)
         for p in cloud_points:
@@ -88,16 +96,39 @@ def main():
 
     # separating clouds to clusters
     data = array(cloud_points)
-    prediction = KMeans(n_clusters=3).fit_predict(array(cloud_points))
-    # plt.figure()
-    # plt.scatter(data[red, 0], data[red, 1], c="r")
-    # plt.scatter(data[blue, 0], data[blue, 1], c="b")
-    # plt.scatter(data[green, 0], data[green, 1], c="g")
-    # plt.show()
-    for i in range(3):
-        surf = ransacForPlane(data[prediction == i].tolist(), 300)
-        if surf != None:
-            print(surf[0], "*x+", surf[1], "*y+", surf[2], "*z=", surf[3])
+    prediction = KMeans(n_clusters=3).fit_predict(data)
+
+    red_shape = data[prediction == 0]
+    green_shape = data[prediction == 1]
+    blue_shape = data[prediction == 2]
+
+    # displaying them in 3D
+    fig = plt.figure()
+    ax = fig.add_subplot(121, projection='3d')
+    ax.set_xlim([-20, 30])
+    ax.set_ylim([-30, 40])
+    ax.set_zlim([-20, 30])
+    ax.set_title("The cloud")
+
+    ax.scatter(*list(zip(*red_shape)), c='r')
+    ax.scatter(*list(zip(*green_shape)), c='g')
+    ax.scatter(*list(zip(*blue_shape)), c='b')
+
+    # finding best fitting planes and displaying vectors of the planes
+    ax = fig.add_subplot(122, projection='3d')
+    ax.set_xlim([-1, 1])
+    ax.set_ylim([-1, 1])
+    ax.set_zlim([-1, 1])
+    ax.set_title("Normalized vectors of the planes")
+
+    surf = my_ransac(red_shape, 300)
+    ax.quiver(0, 0, 0, *surf[0:3], pivot='tail', color='r', normalize=True)
+    surf = my_ransac(green_shape, 300)
+    ax.quiver(0, 0, 0, *surf[0:3], pivot='tail', color='g', normalize=True)
+    surf = my_ransac(blue_shape, 300)
+    ax.quiver(0, 0, 0, *surf[0:3], pivot='tail', color='b', normalize=True)
+
+    plt.show()
 
 
 # Press the green button in the gutter to run the script.
